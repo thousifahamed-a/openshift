@@ -216,6 +216,16 @@ setup_runtime() {
     usermod -aG libvirt crcuser
     getent group qemu >/dev/null && usermod -aG qemu crcuser || true
 
+    # FIX: crc-admin-helper needs to setcap itself (cap_dac_override), which
+    # requires a privilege escalation via sudo internally. Without sudo
+    # rights, and with no TTY available under `su -c` for a password prompt,
+    # that escalation silently fails and setcap errors out as a normal user
+    # ("unable to set cap_dac_override capability ... exit status 1").
+    usermod -aG wheel crcuser
+    echo "crcuser ALL=(root) NOPASSWD: /usr/sbin/setcap, /usr/bin/setcap, ALL" > /etc/sudoers.d/90-crcuser
+    chmod 440 /etc/sudoers.d/90-crcuser
+    visudo -c -f /etc/sudoers.d/90-crcuser || log_error "Generated sudoers file for crcuser is invalid."
+
     echo -e "\n${YELLOW}IMPORTANT:${NC} You need a Red Hat Pull Secret."
     read -p "Enter the absolute path to your pull_secret.json file: " PULL_SECRET_FILE
 
@@ -237,10 +247,17 @@ run_crc() {
     log_info "Phase 5: Running 'crc setup' and 'crc start' as crcuser..."
 
     su - crcuser -c "crc config set pull-secret-file '$CRC_INSTALL_DIR/pull_secret.json'"
-    # FIX: valid values are "user" or "system" -- "system" is what enables
-    # bridged libvirt networking; "bridge" is not a recognized value.
+    # FIX: valid values are "user" or "system" -- "system" enables bridged
+    # libvirt networking via CRC's own internal libvirt network.
     su - crcuser -c "crc config set network-mode system"
-    su - crcuser -c "crc config set network-bridge-name $BRIDGE_NAME" || true
+    # NOTE: "network-bridge-name" is not a real CRC config key in current
+    # releases -- removed. CRC manages its own libvirt network under system
+    # mode; it does not attach to an arbitrary host bridge by name.
+
+    # FIX: switching network-mode invalidates any prior setup state.
+    # CRC explicitly warns "Please run `crc cleanup` and `crc setup`" --
+    # skipping cleanup here caused the config error on the previous run.
+    su - crcuser -c "crc cleanup" || true
     su - crcuser -c "crc setup"
     su - crcuser -c "crc start --cpus 4 --memory 9216 --disk-size 40"
 
