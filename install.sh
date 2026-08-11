@@ -56,7 +56,11 @@ check_specs() {
     fi
 
     TOTAL_MEM=$(free -m | awk '/^Mem:/{print $2}')
-    if [ "$TOTAL_MEM" -lt 9000 ]; then
+    # FIX: original threshold (9000) was below CRC's actual minimum VM
+    # allocation (10752 MiB) -- that let underpowered hosts pass this check
+    # and then fail later at `crc start`. Requiring 12000 leaves headroom
+    # for the host OS itself on top of the VM's memory.
+    if [ "$TOTAL_MEM" -lt 12000 ]; then
         echo -e "${RED}FAIL: Minimum 9GB RAM required. Found: ${TOTAL_MEM}MB${NC}"
         OS_CHECK="failed"
     else
@@ -278,7 +282,7 @@ run_crc() {
     # skipping cleanup here caused the config error on an earlier run.
     run_as_crcuser "crc cleanup" || true
     run_as_crcuser "crc setup"
-    run_as_crcuser "crc start --cpus 4 --memory 9216 --disk-size 40"
+    run_as_crcuser "crc start --cpus 4 --memory 12000 --disk-size 40"
 
     log_success "CRC setup and start completed."
 }
