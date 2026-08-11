@@ -246,20 +246,39 @@ setup_runtime() {
 run_crc() {
     log_info "Phase 5: Running 'crc setup' and 'crc start' as crcuser..."
 
-    su - crcuser -c "crc config set pull-secret-file '$CRC_INSTALL_DIR/pull_secret.json'"
+    # FIX: `su - crcuser -c ...` does not create a real login session, so no
+    # systemd user bus / D-Bus session exists yet. `crc setup` needs both to
+    # install its systemd --user service, and fails with:
+    #   "Failed to connect to user scope bus via local transport:
+    #    $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined"
+    # Enabling lingering starts crcuser's systemd user instance independently
+    # of any login session, and we export the runtime dir/bus address
+    # explicitly for every command below.
+    CRCUSER_UID=$(id -u crcuser)
+    loginctl enable-linger crcuser
+    mkdir -p "/run/user/$CRCUSER_UID"
+    chown crcuser:crcuser "/run/user/$CRCUSER_UID"
+    systemctl start "user@${CRCUSER_UID}.service" || true
+    sleep 2
+
+    run_as_crcuser() {
+        su - crcuser -c "export XDG_RUNTIME_DIR=/run/user/${CRCUSER_UID}; export DBUS_SESSION_BUS_ADDRESS=unix:path=\$XDG_RUNTIME_DIR/bus; $1"
+    }
+
+    run_as_crcuser "crc config set pull-secret-file '$CRC_INSTALL_DIR/pull_secret.json'"
     # FIX: valid values are "user" or "system" -- "system" enables bridged
     # libvirt networking via CRC's own internal libvirt network.
-    su - crcuser -c "crc config set network-mode system"
+    run_as_crcuser "crc config set network-mode system"
     # NOTE: "network-bridge-name" is not a real CRC config key in current
     # releases -- removed. CRC manages its own libvirt network under system
     # mode; it does not attach to an arbitrary host bridge by name.
 
     # FIX: switching network-mode invalidates any prior setup state.
     # CRC explicitly warns "Please run `crc cleanup` and `crc setup`" --
-    # skipping cleanup here caused the config error on the previous run.
-    su - crcuser -c "crc cleanup" || true
-    su - crcuser -c "crc setup"
-    su - crcuser -c "crc start --cpus 4 --memory 9216 --disk-size 40"
+    # skipping cleanup here caused the config error on an earlier run.
+    run_as_crcuser "crc cleanup" || true
+    run_as_crcuser "crc setup"
+    run_as_crcuser "crc start --cpus 4 --memory 9216 --disk-size 40"
 
     log_success "CRC setup and start completed."
 }
